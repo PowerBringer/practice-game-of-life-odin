@@ -49,10 +49,10 @@ main :: proc() {
 
     camera : Camera2D = { zoom = 1.0 }
 
-    cell_recs : [MAP_SIZE][MAP_SIZE]Rectangle = {}
-    cells : [MAP_SIZE][MAP_SIZE]u8 = {}
-    cells_bufer : [MAP_SIZE][MAP_SIZE]u8 = {}
-    cell_colors : map[u8]Color = { 0 = BEIGE, 1 = DARKBROWN } // 0 -> cell is "dead", 1 -> "alive"
+    cell_recs : [MAP_SIZE][MAP_SIZE]Rectangle
+    cells : [MAP_SIZE][MAP_SIZE]u8
+    cells_bufer : [MAP_SIZE][MAP_SIZE]u8
+    cell_colors : [2]Color = { BEIGE, DARKBROWN } // 0 -> cell is "dead", 1 -> "alive"
 
     is_in_greetings_screen := true
     is_paused := true
@@ -188,14 +188,8 @@ update_ui :: #force_inline proc(ui: ^UI) {
     if rl.IsKeyPressed(rl.KeyboardKey.TWO) {
         ui.selected_draw_type = 2
     }
-    ui.generation_text = strings.clone_to_cstring(
-        fmt.tprintf("GENERATION # {}", ui.generation_num), 
-        context.temp_allocator,
-    )
-    ui.fps_text = strings.clone_to_cstring(
-        fmt.tprintf("FPS {}", rl.GetFPS()), 
-        context.temp_allocator,
-    )
+    ui.generation_text = fmt.ctprintf("GENERATION # {}", ui.generation_num)
+    ui.fps_text = fmt.ctprintf("FPS {}", rl.GetFPS())
 }
 
 draw_ui :: #force_inline proc(ui: UI, is_paused: bool) {
