@@ -316,6 +316,14 @@ draw_greetings_screen :: proc() {
     draw_text_with_shadow("SELECT GLIDER PLACEMENT TOOL ->", text_start_x_pos, y)
     draw_text_with_shadow("\"2\"", how_to_start_x_pos, y)
 
+    y = text_start_y_pos + (DEFAULT_FONT_SIZE + margin) * 6
+    draw_text_with_shadow("PAUSE/UNPAUSE ->", text_start_x_pos, y)
+    draw_text_with_shadow("\"SPACE\"/\"P\" (at the start simulation is paused)", how_to_start_x_pos, y)
+
+    y = text_start_y_pos + (DEFAULT_FONT_SIZE + margin) * 7
+    draw_text_with_shadow("PROCESS ONE GENERATION ->", text_start_x_pos, y)
+    draw_text_with_shadow("\"N\"", how_to_start_x_pos, y)
+
     text : cstring = "PRESS ANY KEY TO CONTINUE"
     text_width := rl.MeasureText(text, DEFAULT_FONT_SIZE)
     draw_text_with_shadow(text, (WIDTH - text_width) / 2, HEIGHT - 50)
