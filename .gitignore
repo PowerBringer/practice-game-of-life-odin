@@ -1,0 +1,7 @@
+*ols.json
+.vscode
+.idea
+*.pdb
+*.exe
+build
+out
