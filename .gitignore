@@ -5,3 +5,4 @@
 *.exe
 build
 out
+!gol.exe

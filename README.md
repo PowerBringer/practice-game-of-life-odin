@@ -1,9 +1,13 @@
 # practice-game-of-life-odin
 
-Project -> very naive implementation of Conway's Game of Life in Odin language. No multithreading/simd/segmentation etc. used.
+Conway's Game of Life implementation in Odin lang.
 
-To run simply type: `path/to/odin run .` in project root.
+Simple parallilization is used to speed up cell's next generation status calculation.
 
-Checked on Windows 11 only (made with "dev-2024-02" version).
+Build: `odin build main.odin -out:gol.exe -o:aggressive -file`
+
+If you do not have Odin lang compiler -> use "gol.exe".
+
+Checked on Windows 11 only (made with "dev-2024-03:d325c8ad2" version).
 
 ![showcase](showcase.gif)
