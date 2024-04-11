@@ -1,12 +1,14 @@
 package main
 
+import "base:intrinsics"
 import "core:fmt"
 import "core:math"
+import t "core:thread"
 import "core:strings"
 import rl "vendor:raylib"
 
 TITLE :: "[Conway's Game of Life]"
-WIDTH : i32: 1600
+WIDTH : i32 : 1600
 HEIGHT : i32 : 900
 FPS :: -1
 GENERATION_LIFETIME_MS : f32 : 0.05  // ~20 generations per second
@@ -16,11 +18,28 @@ DEFAULT_TEXT_COLOR :: rl.DARKBROWN
 DEFAULT_TEXT_SHADOW_COLOR :: rl.BROWN
 BG_COLOR : rl.Color : {221, 186, 141, 255}  // Little bit brighter than rl.BEIGE
 
-MAP_SIZE :: 220
-CELL_SIZE : f32 : 8
-END_CELLS_POS :: MAP_SIZE * CELL_SIZE
+MAP_SIZE :: 600
+TOTAL_CELLS_NUM :: MAP_SIZE * MAP_SIZE
+CELL_SIZE : f32 : 4
+ALL_CELLS_WIDTH :: MAP_SIZE * CELL_SIZE
+MAX_CAM_TARGET_POS : rl.Vector2 : {
+    ALL_CELLS_WIDTH - f32(WIDTH) when ALL_CELLS_WIDTH - f32(WIDTH) >= 0 else 0, 
+    ALL_CELLS_WIDTH - f32(HEIGHT) when ALL_CELLS_WIDTH - f32(HEIGHT) >= 0 else 0
+}
+
 DRAW_TOOL_PANEL_W : f32 : 96
 DRAW_TOOL_PANEL_H : f32 : 32
+
+THREADS_NUM :: 4
+#assert(MAP_SIZE % THREADS_NUM == 0)
+LINES_TO_PROCESS_EACH_THREAD :: MAP_SIZE / THREADS_NUM
+
+Cell_Recs :: [TOTAL_CELLS_NUM]rl.Rectangle
+
+Thread_Data :: struct {
+    cells : ^[TOTAL_CELLS_NUM]u8,
+    cells_buffer : ^[TOTAL_CELLS_NUM]u8,
+}
 
 UI :: struct {
     generation_num :        u64,
@@ -48,10 +67,12 @@ main :: proc() {
     using rl
 
     camera : Camera2D = { zoom = 1.0 }
+    prev_camera_target := camera.target - 10
 
-    cell_recs : [MAP_SIZE][MAP_SIZE]Rectangle
-    cells : [MAP_SIZE][MAP_SIZE]u8
-    cells_bufer : [MAP_SIZE][MAP_SIZE]u8
+    cell_recs := new(Cell_Recs)
+    cells := new([TOTAL_CELLS_NUM]u8)
+    cells_buffer := new([TOTAL_CELLS_NUM]u8)
+    td : Thread_Data = {cells=cells, cells_buffer=cells_buffer}
     cell_colors : [2]Color = { BEIGE, DARKBROWN } // 0 -> cell is "dead", 1 -> "alive"
 
     is_in_greetings_screen := true
@@ -89,12 +110,12 @@ main :: proc() {
     // Pre-calculate cell rectangles for drawing once
     for y in 0..<MAP_SIZE {
         for x in 0..<MAP_SIZE {
-            cell_recs[y][x] = {f32(x) * CELL_SIZE, f32(y) * CELL_SIZE, CELL_SIZE, CELL_SIZE}
+            set_at(cell_recs, x, y, Rectangle{f32(x) * CELL_SIZE, f32(y) * CELL_SIZE, CELL_SIZE, CELL_SIZE})
         }
     }
 
     // Place starting "Glider" figure, which will move in bottom-right direction
-    place_glider(&cells, 4, 4)
+    place_glider(cells, 4, 4)
 
     // Greetings screen
     SetExitKey(KeyboardKey.KEY_NULL) // We don't want to close app window before starting simulation
@@ -104,6 +125,12 @@ main :: proc() {
         draw_greetings_screen()
     }
     SetExitKey(EXIT_KEY)
+
+    // indexes for drawing only visible cells
+    start_x := 0
+    start_y := 0
+    end_x := MAP_SIZE
+    end_y := MAP_SIZE
 
     // Main loop
     for !WindowShouldClose() {
@@ -116,13 +143,21 @@ main :: proc() {
         // Change camera position
         if IsMouseButtonDown(MouseButton.MIDDLE) {
             camera.target -= mouse_dt
+            if camera.target.x < 0 { camera.target.x = 0 }
+            if camera.target.y < 0 { camera.target.y = 0 }
+            if camera.target.x > MAX_CAM_TARGET_POS.x {
+                camera.target.x = MAX_CAM_TARGET_POS.x
+            }
+            if camera.target.y > MAX_CAM_TARGET_POS.y {
+                camera.target.y = MAX_CAM_TARGET_POS.y
+            }
         }
         local_mouse_pos := mouse_position + camera.target
         // Get hovered cell index
-        if local_mouse_pos.x > 0 && local_mouse_pos.x < END_CELLS_POS {
+        if local_mouse_pos.x > 0 && local_mouse_pos.x < ALL_CELLS_WIDTH {
             hovered_cell_index.x = int(math.floor(local_mouse_pos.x / CELL_SIZE))
         }
-        if local_mouse_pos.y > 0 && local_mouse_pos.y < END_CELLS_POS {
+        if local_mouse_pos.y > 0 && local_mouse_pos.y < ALL_CELLS_WIDTH {
             hovered_cell_index.y = int(math.floor(local_mouse_pos.y / CELL_SIZE))
         }
 
@@ -138,23 +173,22 @@ main :: proc() {
         }
         // Restart
         if IsKeyPressed(KeyboardKey.R) {
-            restart(&cells, &is_paused)
+            restart(cells, &is_paused)
         }
         // Process UI
         update_ui(&ui)
         // Set cell state to alive at mouse position ("Draw" cell)
         if IsMouseButtonDown(MouseButton.LEFT) && ui.selected_draw_type == 1 && !out_of_grid {
-            cells[hovered_cell_index.y][hovered_cell_index.x] = 1
+            set_at(cells, hovered_cell_index.x, hovered_cell_index.y, 1)
         }
         else if IsMouseButtonPressed(MouseButton.LEFT) && ui.selected_draw_type == 2 && !out_of_grid {  // Place "Glider" figure
-            place_glider(&cells, hovered_cell_index.x, hovered_cell_index.y)
+            place_glider(cells, hovered_cell_index.x, hovered_cell_index.y)
         }
 
         // Update generation state
         if (!is_paused || process_one_generation) && curr_gen_lifetime >= GENERATION_LIFETIME_MS {
-            process_next_generation(&cells, &cells_bufer)
-            cells = cells_bufer
-            cells_bufer = {}
+            process_next_generation(cells, cells_buffer, &td)
+            swap_cell_bufers(cells, cells_buffer, &td)
             process_one_generation = false
             ui.generation_num += 1
             curr_gen_lifetime = 0.0
@@ -165,9 +199,17 @@ main :: proc() {
 
         // Draw current generation
         BeginMode2D(camera)
-        for y in 0..<MAP_SIZE {
-            for x in 0..<MAP_SIZE {
-                DrawRectangleRec(cell_recs[y][x], cell_colors[cells[y][x]])
+        if camera.target != prev_camera_target {
+            start_x, end_x, start_y, end_y = calculate_cell_indexes_for_drawing(camera, cell_recs)
+            prev_camera_target = camera.target
+        }
+
+        for y in start_y..<end_y {
+            for x in start_x..<end_x {
+                cell := item_at(cells, x, y)
+                if cell == 1 {
+                    DrawRectangleRec(item_at(cell_recs, x, y), cell_colors[cell])
+                }
             }
         }
         EndMode2D()
@@ -215,45 +257,42 @@ draw_ui :: #force_inline proc(ui: UI, is_paused: bool) {
     draw_text_with_shadow(ui.fps_text, ui.fps_text_pos.x, ui.fps_text_pos.y)
 }
 
-place_glider :: proc(cells : ^[MAP_SIZE][MAP_SIZE]u8, center_x, center_y: int) {
+place_glider :: proc(cells : ^[TOTAL_CELLS_NUM]u8, center_x, center_y: int) {
     if center_x == MAP_SIZE - 1 { return }
     else if center_y == 0 || center_y == MAP_SIZE - 1 { return }
-    cells[center_y][center_x] = 1
-    cells[center_y + 1][center_x + 1] = 1
-    cells[center_y - 1][center_x + 2] = 1
-    cells[center_y][center_x + 2] = 1
-    cells[center_y + 1][center_x + 2] = 1
+    set_at(cells, center_x, center_y, 1)
+    set_at(cells, center_x + 1, center_y + 1, 1)
+    set_at(cells, center_x + 2, center_y - 1, 1)
+    set_at(cells, center_x + 2, center_y, 1)
+    set_at(cells, center_x + 2, center_y + 1, 1)
 }
 
-get_alive_nbrs :: proc(cs : ^[MAP_SIZE][MAP_SIZE]u8, index_x, index_y : int) -> (alive_nbrs : u8) {
+get_alive_nbrs :: proc(cs : ^[TOTAL_CELLS_NUM]u8, index_x, index_y : int) -> (alive_nbrs : u8) {
     start_y := index_y > 0 ? index_y - 1 : index_y
     end_y := index_y < MAP_SIZE - 1 ? index_y + 2 : index_y + 1
     start_x := index_x > 0 ? index_x - 1 : index_x
     end_x := index_x < MAP_SIZE - 1 ? index_x + 2 : index_x + 1
-    for &subslice in cs[start_y : end_y] {
-        for val in subslice[start_x : end_x] {
-            alive_nbrs += val
+    for y in start_y..<end_y {
+        for x in start_x..<end_x {
+            alive_nbrs += item_at(cs, x, y)
         }
     }
-    alive_nbrs -= cs[index_y][index_x]
+    alive_nbrs -= item_at(cs, index_x, index_y)
     return alive_nbrs
 }
 
-process_next_generation :: proc(cs : ^[MAP_SIZE][MAP_SIZE]u8, buf : ^[MAP_SIZE][MAP_SIZE]u8) {
-    for y in 0..<MAP_SIZE {
-        for x in 0..<MAP_SIZE {
-            cell := cs[y][x]
-            alive_neighbors := get_alive_nbrs(cs, x, y)
-            if cell == 1 && (alive_neighbors < 2 || alive_neighbors > 3) {
-                buf[y][x] = 0
-            }
-            else if cell == 1 && (alive_neighbors == 2 || alive_neighbors == 3) {
-                buf[y][x] = 1
-            }
-            else if cell == 0 && alive_neighbors == 3 {
-                buf[y][x] = 1
-            }
-        }
+process_next_generation :: proc(cs : ^[TOTAL_CELLS_NUM]u8, buf : ^[TOTAL_CELLS_NUM]u8, data : ^Thread_Data) {
+    threads : [THREADS_NUM]^t.Thread
+    for y in 0..<THREADS_NUM {
+        threads[y] = t.create(process_generation_in_thread)
+        threads[y].data = data
+        threads[y].user_index = y * LINES_TO_PROCESS_EACH_THREAD
+    }
+    for thrd in threads {
+        t.start(thrd)
+    }
+    for thrd in threads {
+        t.join(thrd)
     }
 }
 
@@ -270,10 +309,10 @@ update_greetings_screen :: proc(stay_in_greetings_screen : ^bool) {
     }
 }
 
-restart :: proc(cells : ^[MAP_SIZE][MAP_SIZE]u8, is_paused : ^bool) {
+restart :: proc(cells : ^[TOTAL_CELLS_NUM]u8, is_paused : ^bool) {
     for y in 0..<MAP_SIZE {
         for x in 0..<MAP_SIZE {
-            cells[y][x] = 0
+            set_at(cells, x, y, 0)
         }
     }
     place_glider(cells, 4, 4)
@@ -329,4 +368,84 @@ draw_greetings_screen :: proc() {
     draw_text_with_shadow(text, (WIDTH - text_width) / 2, HEIGHT - 50)
 
     rl.EndDrawing()
+}
+
+item_at :: #force_inline proc(arr: ^[$Z]$E, x, y: $N, loc:=#caller_location) -> E where intrinsics.type_is_numeric(N) {
+    return arr[y * MAP_SIZE + x]
+}
+
+set_at :: #force_inline proc(arr: ^[$Z]$E, x, y: $N, val: E) where intrinsics.type_is_numeric(N) {
+    arr[y * MAP_SIZE + x] = val
+}
+
+swap_cell_bufers :: #force_inline proc(cells : ^[TOTAL_CELLS_NUM]u8, cells_buffer : ^[TOTAL_CELLS_NUM]u8, data : ^Thread_Data) {
+    threads : [THREADS_NUM]^t.Thread
+    for y in 0..<THREADS_NUM {
+        threads[y] = t.create(swap_cell_buffers_in_thread)
+        threads[y].data = data
+        threads[y].user_index = y * LINES_TO_PROCESS_EACH_THREAD
+    }
+    for thrd in threads {
+        t.start(thrd)
+    }
+    for thrd in threads {
+        t.join(thrd)
+    }
+    cells_buffer^ = {}
+}
+
+process_generation_in_thread :: proc(thrd : ^t.Thread) {
+    data := (^Thread_Data)(thrd.data)^
+    y := thrd.user_index
+    y_end := y + LINES_TO_PROCESS_EACH_THREAD
+    for y < y_end {
+        start_index := y * MAP_SIZE
+        for cell, x in data.cells[start_index: start_index + MAP_SIZE] {
+            alive_neighbors := get_alive_nbrs(data.cells, x, y)
+            if cell == 1 && (alive_neighbors < 2 || alive_neighbors > 3) {
+                set_at(data.cells_buffer, x, y, 0)
+            }
+            else if cell == 1 && (alive_neighbors == 2 || alive_neighbors == 3) {
+                set_at(data.cells_buffer, x, y, 1)
+            }
+            else if cell == 0 && alive_neighbors == 3 {
+                set_at(data.cells_buffer, x, y, 1)
+            }
+        }
+        y += 1
+    }
+}
+
+swap_cell_buffers_in_thread :: proc(thrd : ^t.Thread) {
+    data := (^Thread_Data)(thrd.data)^
+    y := thrd.user_index
+    y_end := y + LINES_TO_PROCESS_EACH_THREAD
+    for y < y_end {
+        start_index := y * MAP_SIZE
+        for x in 0..<MAP_SIZE {
+            data.cells[start_index + x] = data.cells_buffer[start_index + x]
+        }
+        y += 1
+    }
+}
+
+calculate_cell_indexes_for_drawing :: proc(cam : rl.Camera2D, cell_recs : ^Cell_Recs) -> (start_x, end_x, start_y, end_y : int) {
+    for y in 0..<MAP_SIZE {
+        for x in 0..<MAP_SIZE {
+            if rl.CheckCollisionPointRec(cam.target, cell_recs[y * MAP_SIZE + x]) {
+                start_x = x
+                start_y = y
+                end_x = start_x + int(WIDTH) / int(CELL_SIZE)
+                end_y = start_y + int(HEIGHT) / int(CELL_SIZE)
+                if end_x > MAP_SIZE {
+                    end_x = MAP_SIZE
+                }
+                if end_y > MAP_SIZE {
+                    end_y = MAP_SIZE
+                }
+                break
+            }
+        }
+    }
+    return
 }
